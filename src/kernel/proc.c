@@ -7,6 +7,7 @@
 #include <kernel/printk.h>
 
 Proc root_proc;
+static SpinLock proclock;
 
 void kernel_entry();
 void proc_entry();
@@ -18,6 +19,8 @@ void init_kproc()
     // TODO:
     // 1. init global resources (e.g. locks, semaphores)
     // 2. init the root_proc (finished)
+
+    init_spinlock(&proclock);
 
     init_proc(&root_proc);
     root_proc.parent = &root_proc;
