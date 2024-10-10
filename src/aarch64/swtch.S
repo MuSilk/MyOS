@@ -14,11 +14,9 @@ pushp(x22,x23)
 pushp(x20,x21)
 pushp(x1,x19)
 pushp(lr,x0)
-
-mov x2,sp
-str x2,[x1]
-mov sp,x0
-
+mov x2 , sp
+str x2 , [x1]
+mov sp , x0
 popp(lr,x0)
 popp(x1,x19)
 popp(x20,x21)
