@@ -13,6 +13,13 @@ extern void swtch(KernelContext *new_ctx, KernelContext **old_ctx);
 static SpinLock schlock;
 static ListNode schqueue;
 
+void sched_timer_handler(struct timer* timer){
+    timer->data=0;
+    acquire_sched_lock();
+    sched(RUNNABLE);
+};
+
+
 void init_sched()
 {
 
@@ -27,6 +34,11 @@ void init_sched()
         p->state=RUNNING;
         cpus[i].sched.idle=p;
         cpus[i].sched.thisproc=p;
+
+        cpus[i].sched.sched_timer.triggered=1;
+        cpus[i].sched.sched_timer.data=i;
+        cpus[i].sched.sched_timer.elapse=5;
+        cpus[i].sched.sched_timer.handler=&sched_timer_handler;
     }
 
 }
@@ -112,13 +124,15 @@ static Proc *pick_next()
     // choose the next process to run, and return idle if no runnable process
 
     if(_empty_list(&schqueue))return cpus[cpuid()].sched.idle;
-
-    _for_in_list(p,&schqueue){
-        if(p==&schqueue)break;
+    Proc* ret=cpus[cpuid()].sched.idle;
+    for(ListNode* p=schqueue.prev;p!=&schqueue;p=p->prev){
         Proc* proc=container_of(p,Proc,schinfo.ptnode);
-        if(proc->state==RUNNABLE)return proc;
+        if(proc->state==RUNNABLE){
+            ret=proc;
+            break;
+        }
     }
-    return cpus[cpuid()].sched.idle;
+    return ret;
 }
 
 static void update_this_proc(Proc *p)
@@ -126,6 +140,11 @@ static void update_this_proc(Proc *p)
     // TODO: you should implement this routinue
     // update thisproc to the choosen process
     cpus[cpuid()].sched.thisproc=p;
+
+    if(!cpus[cpuid()].sched.sched_timer.triggered){
+        cancel_cpu_timer(&cpus[cpuid()].sched.sched_timer);
+    }
+    set_cpu_timer(&cpus[cpuid()].sched.sched_timer);
 }
 
 // A simple scheduler.
@@ -135,6 +154,10 @@ void sched(enum procstate new_state)
 {
     auto this = thisproc();
     ASSERT(this->state == RUNNING);
+    if(this->killed&&new_state!=ZOMBIE){
+        release_sched_lock();
+        return;
+    }
     update_this_state(new_state);
     auto next = pick_next();
     update_this_proc(next);

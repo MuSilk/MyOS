@@ -79,6 +79,7 @@ void init_proc(Proc *p)
     init_list_node(&p->ptnode);
     p->parent=NULL;
     init_schinfo(&p->schinfo);
+    init_pgdir(&p->pgdir);
     p->kstack=kalloc_page();
     p->ucontext=(UserContext*)((u64)p->kstack+PAGE_SIZE-16-sizeof(UserContext));
     p->kcontext=(KernelContext*)((u64)p->kstack+PAGE_SIZE-16-sizeof(KernelContext)-sizeof(UserContext));
@@ -173,7 +174,7 @@ int wait(int *exitcode)
         if(p==&this->children)break;
         Proc* childproc=container_of(p,struct Proc,ptnode); 
         if(childproc->state==ZOMBIE){
-            _detach_from_list(&childproc->ptnode);//!!!!!!!!1
+            _detach_from_list(&childproc->ptnode);
             _detach_from_list(&childproc->schinfo.ptnode);
 
             *exitcode=childproc->exitcode;
@@ -209,10 +210,6 @@ NO_RETURN void exit(int code)
     // 4. sched(ZOMBIE)
     // NOTE: be careful of concurrency
 
-#ifdef _DEBUG
-    printk("proc exit %d,parent is %d\n",thisproc()->pid,thisproc()->parent->pid);
-#endif
-
     acquire_spinlock(&proclock);
     acquire_sched_lock();
 
@@ -224,25 +221,14 @@ NO_RETURN void exit(int code)
             Proc* childproc=container_of(p,Proc,ptnode);
             childproc->parent=&root_proc;
         }
-    #ifdef _DEBUG
-        printk("----------exit1\n");
-        print_proc_tree(&root_proc);
-        printk("----------\n");
-    #endif
         _merge_list(&root_proc.children,this->children.next);
-        _detach_from_list(&this->children);
-        release_sched_lock();
-        for(int i=0;i<this->childexit.val;i++)post_sem(&(root_proc.childexit));
+        _detach_from_list(&this->children);        
     }
-    else release_sched_lock();
-    // printk("proc exiting, parent is %d,status is %d\n",this->parent->pid,this->parent->state);
-    post_sem(&this->parent->childexit);
+    free_pgdir(&this->pgdir);
 
-    #ifdef _DEBUG
-        printk("----------exit\n");
-        print_proc_tree(&root_proc);
-        printk("----------\n");
-    #endif
+    release_sched_lock();
+    if(this->childexit.val>0)for(int i=0;i<this->childexit.val;i++)post_sem(&root_proc.childexit);
+    post_sem(&this->parent->childexit);
 
     release_spinlock(&proclock);
     acquire_sched_lock();
@@ -250,9 +236,31 @@ NO_RETURN void exit(int code)
     PANIC(); // prevent the warning of 'no_return function returns'
 }
 
+Proc* find_proc(int pid,Proc* root){
+    if(root->pid==pid)return root;
+    _for_in_list(p,&root->children){
+        if(p==&root->children)break;
+        Proc* proc=container_of(p,Proc,ptnode);
+        Proc* tmp=find_proc(pid,proc);
+        if(tmp!=NULL)return tmp;
+    }
+    return NULL;
+}
+
 int kill(int pid)
 {
     // TODO:
     // Set the killed flag of the proc to true and return 0.
     // Return -1 if the pid is invalid (proc not found).
+
+    acquire_spinlock(&proclock);
+    Proc* p=find_proc(pid,&root_proc);
+    if(p!=NULL&&!is_unused(p)){
+        p->killed=1;
+        activate_proc(p);
+        release_spinlock(&proclock);
+        return 0;
+    }
+    release_spinlock(&proclock);
+    return -1;
 }
