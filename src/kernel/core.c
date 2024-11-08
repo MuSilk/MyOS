@@ -3,6 +3,7 @@
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <test/test.h>
+#include <driver/virtio.h>
 
 volatile bool panic_flag;
 
@@ -31,7 +32,13 @@ NO_RETURN void kernel_entry()
     io_test();
 
     /* LAB 4 TODO 3 BEGIN */
-    
+    static Buf buffer;
+    buffer.flags=0;
+    buffer.block_no=0;
+    virtio_blk_rw(&buffer);
+    u32 lba=*(u32*)(buffer.data+(0x1CE)+(0x8));
+    u32 size=*(u32*)(buffer.data+(0x1ce)+(0xC));
+    printk("LBA in HEX: %x,size: %d\n",lba,size);
     /* LAB 4 TODO 3 END */
 
     while (1)
