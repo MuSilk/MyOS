@@ -59,6 +59,11 @@ static LogHeader header; // in-memory copy of log header block.
  */
 struct {
     /* your fields here */
+    SpinLock lock;
+    bool iscommit;
+    int outstanding;
+    Semaphore sem;
+    Semaphore check;
 } log;
 
 // read the content from disk.
@@ -94,21 +99,77 @@ static void init_block(Block *block) {
 }
 
 // see `cache.h`.
+static usize block_num=0;
 static usize get_num_cached_blocks() {
     // TODO
-    return 0;
+    return block_num;
 }
 
 // see `cache.h`.
 static Block *cache_acquire(usize block_no) {
     // TODO
-    return 0;
+    acquire_spinlock(&lock);
+    Block* res=NULL;
+    _for_in_list(p,&head){
+        if(p==&head)break;
+        Block* b=container_of(p,Block,node);
+        if(b->block_no==block_no){
+            res=b;
+            break;
+        }
+    }
+    if(res){
+        res->acquired=true;
+        release_spinlock(&lock);
+        if(!wait_sem(&res->lock))PANIC();
+        acquire_spinlock(&lock);
+        _detach_from_list(&res->node);
+        _insert_into_list(&head,&res->node);
+        release_spinlock(&lock);
+        return res;
+    }
+    if(block_num>=EVICTION_THRESHOLD){
+        for(ListNode* p=head.prev;p!=&head;p=p->prev){
+            if(block_num<EVICTION_THRESHOLD)break;
+            Block* b=container_of(p,Block,node);
+            if(!b->acquired&&!b->pinned){
+                ListNode* q=p;
+                p=p->next;
+                _detach_from_list(q);
+                block_num--;
+                kfree(b);
+            }
+        }
+    }
+    res=kalloc(sizeof(Block));
+    init_block(res);
+
+    res->block_no=block_no;
+    res->acquired=true;
+    res->valid=true;
+
+    release_spinlock(&lock);
+    if(!wait_sem(&res->lock))PANIC();
+    device_read(res);
+    acquire_spinlock(&lock);
+
+    block_num++;
+    _insert_into_list(&head,&res->node);
+    release_spinlock(&lock);
+    
+    return res;
 }
 
 // see `cache.h`.
 static void cache_release(Block *block) {
     // TODO
+    acquire_spinlock(&lock);
+    block->acquired=false;
+    post_sem(&block->lock);
+    release_spinlock(&lock);
 }
+
+SpinLock bitmap_lock;
 
 // see `cache.h`.
 void init_bcache(const SuperBlock *_sblock, const BlockDevice *_device) {
@@ -116,31 +177,144 @@ void init_bcache(const SuperBlock *_sblock, const BlockDevice *_device) {
     device = _device;
 
     // TODO
+    init_spinlock(&lock);
+    init_spinlock(&log.lock);
+    init_spinlock(&bitmap_lock);
+    init_list_node(&head);
+    block_num=0;
+    log.outstanding=log.iscommit=0;
+    init_sem(&log.sem,0);
+    init_sem(&log.check,0);
+    read_header();
+    for(usize i=0;i<header.num_blocks;i++){
+        Block* from=cache_acquire(sblock->log_start+i+1);
+        Block* to=cache_acquire(header.block_no[i]);
+        memcpy(to->data,from->data,BLOCK_SIZE);
+        device_write(to);
+        cache_release(from);
+        cache_release(to);
+    }
+    header.num_blocks=0;
+    memset(header.block_no,0,LOG_MAX_SIZE);
+    write_header();
 }
 
 // see `cache.h`.
 static void cache_begin_op(OpContext *ctx) {
     // TODO
+    acquire_spinlock(&log.lock);
+    ctx->rm=0;
+    while(log.iscommit||header.num_blocks+(log.outstanding+1)*OP_MAX_NUM_BLOCKS>LOG_MAX_SIZE){
+        release_spinlock(&log.lock);
+        if(!wait_sem(&log.sem))PANIC();
+        acquire_spinlock(&log.lock);
+    }
+    log.outstanding++;
+    release_spinlock(&log.lock);
 }
 
 // see `cache.h`.
 static void cache_sync(OpContext *ctx, Block *block) {
     // TODO
+    if(ctx==NULL){
+        device_write(block);
+        return ;
+    }
+    acquire_spinlock(&log.lock);
+    block->pinned=true;
+    for(usize i=0;i<header.num_blocks;i++){
+        if(block->block_no==header.block_no[i]){
+            release_spinlock(&log.lock);
+            return;
+        }
+    }
+    if(ctx->rm>=OP_MAX_NUM_BLOCKS||header.num_blocks>=LOG_MAX_SIZE)PANIC();
+    header.block_no[header.num_blocks++]=block->block_no;
+    ctx->rm++;
+    release_spinlock(&log.lock);
 }
 
 // see `cache.h`.
 static void cache_end_op(OpContext *ctx) {
     // TODO
+    acquire_spinlock(&log.lock);
+    if(log.iscommit)PANIC();
+    log.outstanding--;
+    if(log.outstanding>0){
+        post_sem(&log.sem);
+        release_spinlock(&log.lock);
+        if(!wait_sem(&log.check))PANIC();
+        return;
+    }
+    log.iscommit=1;
+    for(usize i=0;i<header.num_blocks;i++){
+        release_spinlock(&log.lock);
+
+        Block* from=cache_acquire(header.block_no[i]);
+        Block* to=cache_acquire(sblock->log_start+i+1);
+        memcpy(to->data,from->data,BLOCK_SIZE);
+        device_write(to);
+        cache_release(from);
+        cache_release(to);
+
+        acquire_spinlock(&log.lock);
+    }
+    release_spinlock(&log.lock);
+    write_header();
+    acquire_spinlock(&log.lock);
+    for(usize i=0;i<header.num_blocks;i++){
+        Block* b=cache_acquire(header.block_no[i]);
+        device_write(b);
+        b->pinned=false;
+        cache_release(b);
+    }
+    header.num_blocks=0;
+    release_spinlock(&log.lock);
+    write_header();
+    acquire_spinlock(&log.lock);
+    log.iscommit=0;
+    post_all_sem(&log.sem);
+    post_all_sem(&log.check);
+    release_spinlock(&log.lock);
 }
 
 // see `cache.h`.
 static usize cache_alloc(OpContext *ctx) {
     // TODO
+    acquire_spinlock(&bitmap_lock);
+    for (u32 block_head=0;block_head<sblock->num_blocks;block_head+=8*BLOCK_SIZE){
+        Block* block=cache_acquire(sblock->bitmap_start+block_head/(8*BLOCK_SIZE));
+        BitmapCell* bitmap=(BitmapCell*)block->data;
+        for (u32 index=0;index<(8*BLOCK_SIZE)&&block_head+index<sblock->num_blocks;index++){
+            if(bitmap_get(bitmap,index))continue;
+            bitmap_set(bitmap,index);
+            cache_sync(ctx,block);
+            cache_release(block);
+
+            Block* res=cache_acquire(block_head+index);
+            memset(res->data,0,BLOCK_SIZE);
+            cache_sync(ctx,res);
+            cache_release(res);
+            release_spinlock(&bitmap_lock);
+            return block_head+index;
+        }
+        cache_release(block);
+    }
+    release_spinlock(&bitmap_lock);
+    PANIC();
 }
 
 // see `cache.h`.
+
 static void cache_free(OpContext *ctx, usize block_no) {
     // TODO
+    acquire_spinlock(&bitmap_lock);
+    Block* b=cache_acquire(sblock->bitmap_start+block_no/(8*BLOCK_SIZE));
+    usize index=block_no%(8*BLOCK_SIZE);
+    bitmap_clear((BitmapCell*)b->data,index);
+    cache_sync(ctx,b);
+    cache_release(b);
+    release_spinlock(&bitmap_lock);
 }
 
 BlockCache bcache = {
