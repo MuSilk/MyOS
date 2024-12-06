@@ -5,8 +5,20 @@
 
 #define NCPU 4
 
+struct timer {
+    bool triggered;
+    int elapse;
+    u64 _key;
+    struct rb_node_ _node;
+    void (*handler)(struct timer *);
+    u64 data;
+};
+
 struct sched {
     // TODO: customize your sched info
+    Proc* thisproc;
+    Proc* idle;
+    struct timer sched_timer;
 };
 
 struct cpu {
@@ -16,15 +28,6 @@ struct cpu {
 };
 
 extern struct cpu cpus[NCPU];
-
-struct timer {
-    bool triggered;
-    int elapse;
-    u64 _key;
-    struct rb_node_ _node;
-    void (*handler)(struct timer *);
-    u64 data;
-};
 
 void init_clock_handler();
 

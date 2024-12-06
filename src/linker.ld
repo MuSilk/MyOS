@@ -14,7 +14,7 @@ SECTIONS
     PROVIDE(etext = .);
     . = ALIGN(4096);
     .init : AT(ADDR(.init) - 0xFFFF000000000000) { 
-        PROVIDE(early_init = .);
+        PROVIDE(early_init = .); 
         KEEP(*(.init.early))
         PROVIDE(rest_init = .);
         KEEP(*(.init.rest))

@@ -115,7 +115,13 @@ int virtio_blk_rw(Buf *b)
     arch_fence();
 
     /* LAB 4 TODO 1 BEGIN */
-    
+    disk.virtq.info[d0].done = 0;
+    disk.virtq.info[d0].status = 0;
+    release_spinlock(&disk.lk);
+    while (disk.virtq.info[d0].done == 0){
+        if(!wait_sem(&b->sem))PANIC();
+    }
+    acquire_spinlock(&disk.lk);
     /* LAB 4 TODO 1 END */
 
     disk.virtq.info[d0].done = 0;
@@ -139,7 +145,11 @@ static void virtio_blk_intr()
         }
 
         /* LAB 4 TODO 2 BEGIN */
-    
+        disk.virtq.info[d0].done = 1;
+        int d1=disk.virtq.desc[d0].next;
+        auto data_ptr=P2V(disk.virtq.desc[d1].addr);
+        Buf* buf=(Buf*)(data_ptr-offset_of(Buf,data));
+        post_sem(&buf->sem);
         /* LAB 4 TODO 2 END */
 
         disk.virtq.info[d0].buf = NULL;
