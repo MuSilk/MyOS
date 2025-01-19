@@ -2,11 +2,16 @@
 #include <common/rc.h>
 #include <common/spinlock.h>
 #include <common/list.h>
+#include <common/string.h>
 #include <driver/memlayout.h>
 #include <kernel/mem.h>
 #include <kernel/printk.h>
 
 RefCount kalloc_page_cnt;
+int page_total=0;
+struct page refpage[PAGE_TOTAL];
+struct page* zero_page=NULL;
+
 extern char end[];
 static SpinLock memlock;
 
@@ -31,20 +36,30 @@ void kinit() {
 
     for(u64 i=PAGE_BASE((u64)&end)+PAGE_SIZE*2;i+PAGE_SIZE<P2K(PHYSTOP);i+=PAGE_SIZE){
         add_to_queue(&pages,(QueueNode*)i);
-        // printk("%llx\n",i);
+        page_total+=1;
     }
+    zero_page=(struct page*)(PAGE_BASE((u64)&end)+PAGE_SIZE);
+    memset(zero_page,0,PAGE_SIZE);
+    increment_rc(&refpage[K2P(zero_page)/PAGE_SIZE].ref);
+}
+
+u64 left_page_cnt(){
+    return page_total-kalloc_page_cnt.count;
 }
 
 void* kalloc_page() {
     increment_rc(&kalloc_page_cnt);
     void *page=fetch_from_queue(&pages);
+    increment_rc(&refpage[K2P(page)/PAGE_SIZE].ref);
     return page;
 }
 
 void kfree_page(void* p) {
-    decrement_rc(&kalloc_page_cnt);
-    add_to_queue(&pages,p);
-    return;
+    decrement_rc(&refpage[K2P(p)/PAGE_SIZE].ref);
+    if(refpage[K2P(p)/PAGE_SIZE].ref.count==0){
+        decrement_rc(&kalloc_page_cnt);
+        add_to_queue(&pages,p);
+    }
 }
 
 typedef struct _PageHead{
@@ -100,5 +115,5 @@ void kfree(void* ptr) {
 }
 
 void* get_zero_page() {
-    return NULL;
+    return zero_page;
 }

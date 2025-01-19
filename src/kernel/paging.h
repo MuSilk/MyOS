@@ -11,6 +11,8 @@
 #define ST_DATA ST_FILE
 #define ST_BSS ST_FILE
 
+#define ST_STK (1<<10) 
+
 struct section {
     u64 flags;
     u64 begin;

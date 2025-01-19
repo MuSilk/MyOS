@@ -3,8 +3,10 @@
 #include <common/defines.h>
 #include <common/list.h>
 #include <common/rc.h>
+#include <driver/memlayout.h>
 
 #define PAGE_COUNT ((P2K(PHYSTOP) - PAGE_BASE((u64) & end)) / PAGE_SIZE - 1)
+#define PAGE_TOTAL PHYSTOP/PAGE_SIZE
 
 struct page {
     RefCount ref;

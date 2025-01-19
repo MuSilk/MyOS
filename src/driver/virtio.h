@@ -4,7 +4,7 @@
 #include <driver/base.h>
 #include <common/buf.h>
 
-#define NQUEUE 8
+#define NQUEUE 64
 
 #define VIRTIO_REG_MAGICVALUE (VIRTIO0 + 0x00)
 #define VIRTIO_REG_VERSION (VIRTIO0 + 0x04)

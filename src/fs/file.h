@@ -31,11 +31,15 @@ typedef struct file {
 
 struct ftable {
     // TODO: table of file objects in the system
-
+    SpinLock lock;
+    File files[NFILE];
     // Note: you may need a lock to prevent concurrent access to the table!
 };
 
+#define NOFILE 16
+
 struct oftable {
+    File* file[NOFILE];
     // TODO: table of opened file descriptors in a process
 };
 

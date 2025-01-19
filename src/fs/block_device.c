@@ -1,5 +1,7 @@
 #include <driver/virtio.h>
 #include <fs/block_device.h>
+#include <common/string.h>
+#include <kernel/printk.h>
 
 /**
     @brief a simple implementation of reading a block from SD card.
@@ -43,8 +45,28 @@ static u8 sblock_data[BLOCK_SIZE];
 BlockDevice block_device;
 
 void init_block_device() {
+    static Buf buffer;
+    buffer.flags=0;
+    buffer.block_no=0;
+    
+    virtio_blk_rw(&buffer);
+    
+    u32 lba=*(u32*)(buffer.data+(0x1CE)+(0x8));
+    u32 size=*(u32*)(buffer.data+(0x1ce)+(0xC));
+    printk("LBA in HEX: %x,size: %d\n",lba,size);
+
+    sd_read(lba+1, sblock_data);
     block_device.read = sd_read;
     block_device.write = sd_write;
+
+    const SuperBlock* sb = get_super_block();
+	printk("num_blocks: %d\n",sb->num_blocks);
+	printk("num_data_blocks: %d\n", sb->num_data_blocks);
+	printk("num_inodes: %d\n", sb->num_inodes);
+	printk("num_log_blocks: %d\n", sb->num_log_blocks);
+	printk("log_start: %d\n", sb->log_start);
+	printk("inode_start: %d\n", sb->inode_start);
+	printk("bitmap_start: %d\n", sb->bitmap_start);
 }
 
 const SuperBlock *get_super_block() { return (const SuperBlock *)sblock_data; }

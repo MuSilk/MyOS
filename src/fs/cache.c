@@ -68,22 +68,22 @@ struct {
 
 // read the content from disk.
 static INLINE void device_read(Block *block) {
-    device->read(block->block_no, block->data);
+    device->read(block->block_no+0x20800, block->data);
 }
 
 // write the content back to disk.
 static INLINE void device_write(Block *block) {
-    device->write(block->block_no, block->data);
+    device->write(block->block_no+0x20800, block->data);
 }
 
 // read log header from disk.
 static INLINE void read_header() {
-    device->read(sblock->log_start, (u8 *)&header);
+    device->read(sblock->log_start+0x20800, (u8 *)&header);
 }
 
 // write log header back to disk.
 static INLINE void write_header() {
-    device->write(sblock->log_start, (u8 *)&header);
+    device->write(sblock->log_start+0x20800, (u8 *)&header);
 }
 
 // initialize a block struct.
@@ -156,7 +156,6 @@ static Block *cache_acquire(usize block_no) {
     block_num++;
     _insert_into_list(&head,&res->node);
     release_spinlock(&lock);
-    
     return res;
 }
 

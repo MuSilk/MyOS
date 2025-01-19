@@ -6,6 +6,7 @@
 #include <common/string.h>
 #include <kernel/printk.h>
 #include <kernel/paging.h>
+#include <sys/mman.h>
 
 Proc root_proc;
 static SpinLock proclock;
@@ -29,17 +30,6 @@ static int fetch_pid(){
     pid_head=pid_head->next;
     kfree(p);
     return pid;
-}
-
-void print_proc_tree(Proc* root){
-    if(_empty_list(&root->children))return;
-    _for_in_list(p,&root->children){
-        if(p==&root->children)break;
-        Proc* childp=container_of(p,Proc,ptnode);
-        printk("%d->%d\n",root->pid,childp->pid);
-        ASSERT(childp->pid>0);
-        print_proc_tree(childp);
-    }
 }
 
 void kernel_entry();
@@ -68,6 +58,7 @@ void init_proc(Proc *p)
     // NOTE: be careful of concurrency
 
     acquire_spinlock(&proclock);
+    memset(p,0,sizeof(Proc));
     p->killed=0;
     p->idle=0;
     p->pid=fetch_pid();
@@ -80,8 +71,12 @@ void init_proc(Proc *p)
     init_schinfo(&p->schinfo);
     init_pgdir(&p->pgdir);
     p->kstack=kalloc_page();
+    memset(p->kstack,0,PAGE_SIZE);
     p->ucontext=(UserContext*)((u64)p->kstack+PAGE_SIZE-16-sizeof(UserContext));
     p->kcontext=(KernelContext*)((u64)p->kstack+PAGE_SIZE-16-sizeof(KernelContext)-sizeof(UserContext));
+    init_oftable(&p->oftable);
+    p->cwd=NULL;
+    init_list_node(&p->vma_head);
     release_spinlock(&proclock);
 }
 
@@ -89,6 +84,7 @@ Proc *create_proc()
 {
     Proc *p = kalloc(sizeof(Proc));
     init_proc(p);
+    // printk("create proc pid:%d\n",p->pid);
     return p;
 }
 
@@ -97,19 +93,11 @@ void set_parent_to_this(Proc *proc)
     // TODO: set the parent of proc to thisproc
     // NOTE: maybe you need to lock the process tree
     // NOTE: it's ensured that the old proc->parent = NULL
-#ifdef _DEBUG
-    printk("set %d parent %d\n",proc->pid,thisproc()->pid);
-#endif
 
     acquire_spinlock(&proclock);
     Proc* this=thisproc();
     proc->parent=this;
     _insert_into_list(&this->children,&proc->ptnode);
-#ifdef _DEBUG
-    printk("----------\n");
-    print_proc_tree(&root_proc);
-    printk("----------\n");
-#endif
     release_spinlock(&proclock);
 }
 
@@ -120,10 +108,6 @@ int start_proc(Proc *p, void (*entry)(u64), u64 arg)
     // 2. setup the kcontext to make the proc start with proc_entry(entry, arg)
     // 3. activate the proc and return its pid
     // NOTE: be careful of concurrency
-
-#ifdef _DEBUG
-    printk("proc start %d\n",p->pid);
-#endif
 
     acquire_spinlock(&proclock);
     if(p->parent==NULL){
@@ -147,14 +131,6 @@ int wait(int *exitcode)
     // 3. if any child exits, clean it up and return its pid and exitcode
     // NOTE: be careful of concurrency
 
-#ifdef _DEBUG
-    printk("proc wait %d,root state %d\n",thisproc()->pid,root_proc.state);
-
-    printk("----------0\n");
-    print_proc_tree(&root_proc);
-    printk("----------\n");
-#endif
-
     acquire_spinlock(&proclock);
     Proc* this=thisproc();
     if(_empty_list(&this->children)){
@@ -163,9 +139,7 @@ int wait(int *exitcode)
     }
     release_spinlock(&proclock);
 
-    if(!wait_sem(&this->childexit)){
-        return -1;
-    }
+    if(!wait_sem(&this->childexit))return -1;
 
     acquire_spinlock(&proclock);
     acquire_sched_lock();
@@ -182,13 +156,6 @@ int wait(int *exitcode)
             kfree(childproc);
             free_pid(pid);
 
-            #ifdef _DEBUG
-                printk("proc wait %d,root state... %d\n",thisproc()->pid,root_proc.state);
-                printk("----------2\n");
-                print_proc_tree(&root_proc);
-                printk("----------\n");
-            #endif
-
             release_sched_lock();
             release_spinlock(&proclock);
 
@@ -198,6 +165,19 @@ int wait(int *exitcode)
     release_sched_lock();
     release_spinlock(&proclock);
     return -1;
+}
+
+void vma_writeback(struct vma* vma,usize length){
+    if(vma->permission&PTE_RO||(vma->flags&MAP_PRIVATE))return;
+    for(u64 i=0;i<length;i+=PAGE_SIZE){
+        volatile char data=*(char*)((u64)vma->start+i);
+        (void)data;
+    }
+    auto f=vma->file;
+    auto f_off=f->off;
+    f->off=vma->off;
+    file_write(f,(char*)vma->start,length);
+    f->off=f_off;
 }
 
 NO_RETURN void exit(int code)
@@ -223,6 +203,34 @@ NO_RETURN void exit(int code)
         _merge_list(&root_proc.children,this->children.next);
         _detach_from_list(&this->children);        
     }
+
+    for(ListNode* p=this->vma_head.next;p!=&this->vma_head;){
+        auto vma=container_of(p,struct vma,ptnode);
+        vma_writeback(vma,vma->length);
+        for(u64 i=0;i<vma->length;i+=PAGE_SIZE){
+            vmunmap(&this->pgdir,vma->start+i);
+        }
+        arch_tlbi_vmalle1is();
+        file_close(vma->file);
+
+        auto q=p->next;
+        kfree(vma);
+        p=q;
+    }
+
+    release_sched_lock();
+    release_spinlock(&proclock);
+    for(int i=0;i<NOFILE;i++){
+        if(this->oftable.file[i]){
+            file_close(this->oftable.file[i]);
+            this->oftable.file[i]=NULL;
+        }
+    }
+    acquire_spinlock(&proclock);
+    acquire_sched_lock();
+
+    if(this->cwd)inodes.put(NULL,this->cwd);
+    free_sections(&this->pgdir);
     free_pgdir(&this->pgdir);
 
     release_sched_lock();
@@ -251,6 +259,17 @@ int kill(int pid)
     // TODO:
     // Set the killed flag of the proc to true and return 0.
     // Return -1 if the pid is invalid (proc not found).
+
+    acquire_spinlock(&proclock);
+    Proc* p=find_proc(pid,&root_proc);
+    if(p!=NULL&&!is_unused(p)){
+        p->killed=1;
+        activate_proc(p);
+        release_spinlock(&proclock);
+        return 0;
+    }
+    release_spinlock(&proclock);
+    return -1;
 }
 
 /*
@@ -258,6 +277,15 @@ int kill(int pid)
  * Sets up stack to return as if from system call.
  */
 void trap_return();
+
+void print_oftable(struct oftable* oftable){
+    printk("print oftable:\n");
+    for (int i = 0; i < NOFILE; i++){
+        if(oftable->file[i]){
+            printk("oftable: %d,file: %llx\n",i,(u64)oftable->file[i]);
+        }
+    }  
+}
 int fork()
 {
     /**
@@ -271,5 +299,46 @@ int fork()
      * 6. Activate the new proc and return its pid.
      */
 
+    Proc *fat=thisproc();
+    Proc *son=create_proc();
+
+    set_parent_to_this(son);
+
+    for (int i = 0; i < NOFILE; i++){
+        if(fat->oftable.file[i]){
+            son->oftable.file[i] = file_dup(fat->oftable.file[i]);
+        }
+    }       
+    son->cwd = inodes.share(fat->cwd);
+
+    _for_in_list(p,&fat->pgdir.section_head){
+        if(p==&fat->pgdir.section_head)break;
+
+        struct section* sec=container_of(p,struct section,stnode);
+        for(u64 va=PAGE_BASE(sec->begin);va<sec->end;va+=PAGE_SIZE){
+            auto oldpte=get_pte(&fat->pgdir,va,false);
+            if(oldpte==NULL||!(*oldpte&PTE_VALID))continue;
+            // vmmap(&son->pgdir,va,(void*)P2K(PTE_ADDRESS(*oldpte)),PTE_FLAGS(*oldpte)|PTE_RO);
+            void* np=kalloc_page();
+            vmmap(&son->pgdir, va, np, PTE_FLAGS(*oldpte));
+            copyout(&son->pgdir, (void*)va, (void*)P2K(PTE_ADDRESS(*oldpte)), PAGE_SIZE);
+            
+        }
+    }
+    copy_sections(&fat->pgdir.section_head,&son->pgdir.section_head);
+    memmove(son->ucontext,fat->ucontext,sizeof(UserContext));
+
+    son->ucontext->x[0]=0;
+    
+    _for_in_list(p,&fat->vma_head){
+        if(p==&fat->vma_head)break;
+        auto v=container_of(p,struct vma,ptnode);
+        struct vma* nv=kalloc(sizeof(struct vma));
+        memmove(nv,v,sizeof(struct vma));
+        nv->file=file_dup(v->file);
+        _insert_into_list(&son->vma_head,&nv->ptnode);
+    }
+
+    return start_proc(son,trap_return,0);
     /* (Final) TODO END */
 }

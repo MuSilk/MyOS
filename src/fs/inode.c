@@ -3,6 +3,9 @@
 #include <kernel/mem.h>
 #include <kernel/printk.h>
 
+#include <kernel/sched.h>
+#include <kernel/console.h>
+
 /**
     @brief the private reference to the super block.
 
@@ -260,6 +263,10 @@ static usize inode_map(OpContext* ctx,
 
 // see `inode.h`.
 static usize inode_read(Inode* inode, u8* dest, usize offset, usize count) {
+    if(inode->entry.type==INODE_DEVICE){
+        return console_read(inode,(char*)dest,count);
+    }
+
     InodeEntry* entry = &inode->entry;
     if (count + offset > entry->num_bytes)
         count = entry->num_bytes - offset;
@@ -269,7 +276,10 @@ static usize inode_read(Inode* inode, u8* dest, usize offset, usize count) {
     ASSERT(offset <= end);
 
     // TODO
-    for(usize i=offset/BLOCK_SIZE;i*BLOCK_SIZE<end;i++){
+
+    // printk("inode_read %lld begin offset:%lld count:%lld\n",inode->inode_no,offset,count);
+
+    for(usize i=offset/BLOCK_SIZE;i*BLOCK_SIZE<end;i++){   
         usize l=i*BLOCK_SIZE;if(l<offset)l=offset;
         usize r=(i+1)*BLOCK_SIZE;if(r>end)r=end;
         usize len=r-l;
@@ -289,6 +299,10 @@ static usize inode_write(OpContext* ctx,
                          u8* src,
                          usize offset,
                          usize count) {
+    if (inode->entry.type == INODE_DEVICE) {
+        return console_write(inode, (char*)src, count);
+    }
+
     InodeEntry* entry = &inode->entry;
     usize end = offset + count;
     ASSERT(offset <= entry->num_bytes);
@@ -444,7 +458,41 @@ static Inode* namex(const char* path,
                     char* name,
                     OpContext* ctx) {
     /* (Final) TODO BEGIN */
-    
+    Inode *cur;
+    if(path[0]=='/')cur=inode_get(ROOT_INODE_NO);
+    else cur=inode_share(thisproc()->cwd);
+
+    while((path=skipelem(path,name))!=NULL){
+        inode_lock(cur);
+        if(cur->entry.type!=INODE_DIRECTORY){
+            inode_unlock(cur);
+            inode_put(ctx,cur);
+            return NULL;
+        }
+
+        if(nameiparent&&path[0]=='\0'){
+            inode_unlock(cur);
+            return cur;
+        }
+
+        usize inode_no=inode_lookup(cur,name,0);
+        if(inode_no==0){
+            inode_unlock(cur);
+            inode_put(ctx,cur);
+            return NULL;
+        }
+        Inode* nxt=inode_get(inode_no);
+        inode_unlock(cur);
+        inode_put(ctx,cur);
+        cur=nxt;
+    }
+
+    if(nameiparent){
+        inode_put(ctx,cur);
+        return NULL;
+    }
+    return cur;
+
     /* (Final) TODO END */
     return 0;
 }

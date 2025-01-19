@@ -5,6 +5,8 @@
 
 #include <kernel/printk.h>
 
+extern struct page refpage[PAGE_TOTAL];
+
 static void* fetch_page(){
     void* p=kalloc_page();
     memset(p,0,PAGE_SIZE);
@@ -44,6 +46,8 @@ PTEntriesPtr get_pte(struct pgdir *pgdir, u64 va, bool alloc)
 void init_pgdir(struct pgdir *pgdir)
 {
     pgdir->pt = NULL;
+    init_spinlock(&pgdir->lock);
+    init_list_node(&pgdir->section_head);
 }
 
 static void free_page(PTEntriesPtr p,int dep){
@@ -88,8 +92,17 @@ void attach_pgdir(struct pgdir *pgdir)
 void vmmap(struct pgdir *pd, u64 va, void *ka, u64 flags)
 {
     /* (Final) TODO BEGIN */
-
+    auto pte=get_pte(pd,va,true);
+    *pte=K2P(ka)|flags;
+    increment_rc(&refpage[K2P(ka)/PAGE_SIZE].ref);
     /* (Final) TODO END */
+}
+
+void vmunmap(struct pgdir *pd, u64 va){
+    auto pte=get_pte(pd,va,false);
+    if(pte==NULL)return;
+    decrement_rc(&refpage[PTE_ADDRESS(*pte)/PAGE_SIZE].ref);
+    *pte=NULL;
 }
 
 /*
@@ -100,6 +113,29 @@ void vmmap(struct pgdir *pd, u64 va, void *ka, u64 flags)
 int copyout(struct pgdir *pd, void *va, void *p, usize len)
 {
     /* (Final) TODO BEGIN */
+    while(len>0){
+        usize pgoff=(usize)va%PAGE_SIZE;
+        u64* pte=get_pte(pd,(u64)va,1);
+        if(pte==NULL)return -1;
 
+        void* page;
+        if(*pte&PTE_VALID)page=(void*)P2K(PTE_ADDRESS(*pte));
+        else{
+            page=kalloc_page();
+            *pte=K2P(page)|PTE_USER_DATA;
+        }
+
+        usize l=MIN(PAGE_SIZE-pgoff,len);
+        if(p){
+            memcpy(page+pgoff,p,l);
+            p+=l;
+        }
+        else{
+            memset(page+pgoff,0,l);
+        }
+        va+=l;
+        len-=l;
+    }
+    return 0;
     /* (Final) TODO END */
 }

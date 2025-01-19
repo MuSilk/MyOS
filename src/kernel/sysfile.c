@@ -37,7 +37,8 @@ struct iovec {
 static struct file *fd2file(int fd)
 {
     /* (Final) TODO BEGIN */
-    
+    if(fd<0||fd>=NOFILE) return NULL;
+    return thisproc()->oftable.file[fd];
     /* (Final) TODO END */
 }
 
@@ -48,7 +49,13 @@ static struct file *fd2file(int fd)
 int fdalloc(struct file *f)
 {
     /* (Final) TODO BEGIN */
-    
+    auto proc=thisproc();
+    for(int i=0;i<NOFILE;i++){
+        if(proc->oftable.file[i]==0){
+            proc->oftable.file[i]=f;
+            return i;
+        }
+    }
     /* (Final) TODO END */
     return -1;
 }
@@ -62,18 +69,87 @@ define_syscall(ioctl, int fd, u64 request)
     return 0;
 }
 
+#define MMAP_START 0x100000
+
 define_syscall(mmap, void *addr, int length, int prot, int flags, int fd,
                int offset)
 {
     /* (Final) TODO BEGIN */
-    
+    auto proc=thisproc();
+    auto f=proc->oftable.file[fd];
+
+    int pte_flag=PTE_USER_DATA;
+    if(prot&PROT_WRITE){
+        if(!f->writable&&!(flags&MAP_PRIVATE))return -1;
+    }
+    if(prot&PROT_READ){
+        if(!f->readable)return -1;
+    }
+    if(!(prot&PROT_WRITE))pte_flag|=PTE_RO;
+
+    struct vma* v=kalloc(sizeof(struct vma));
+    v->permission=pte_flag;
+    v->length=length;
+    v->off=offset;
+    v->file=f;
+    v->flags=flags;
+    file_dup(f);
+
+    u64 start=MMAP_START;
+    if(addr){
+        start=(u64)addr;
+    }
+    else if(!_empty_list(&proc->vma_head)){
+        auto vma=container_of(proc->vma_head.next,struct vma,ptnode);
+        start=vma->end;
+    }
+    if(start!=PAGE_BASE(start))start=PAGE_BASE(start)+PAGE_SIZE;
+    v->start=start;
+    v->end=v->start+length;
+    _insert_into_list(&proc->vma_head,&v->ptnode);
+
+    printk("mmap:addr %llx,length: %x\n",(u64)v->start,length);
+
+    return v->start;
     /* (Final) TODO END */
 }
 
 define_syscall(munmap, void *addr, size_t length)
 {
     /* (Final) TODO BEGIN */
-    
+    printk("munmap:addr %llx,length: %llx\n",(u64)addr,(u64)length);
+    auto proc=thisproc();
+    struct vma* vma=NULL;
+    _for_in_list(p,&proc->vma_head){
+        auto v=container_of(p,struct vma,ptnode);
+        if(v->start<=(u64)addr&&(u64)addr+length<=v->end){
+            vma=v;
+            break;
+        }
+    }
+    if(!vma)return -1;
+    if((u64)addr==vma->start&&length<=vma->length){
+        vma_writeback(vma,length);
+        for(u64 i=0;i<length;i+=PAGE_SIZE){
+            vmunmap(&proc->pgdir,(u64)addr+i);
+        }
+        arch_tlbi_vmalle1is();
+        if(length==vma->length){
+            file_close(vma->file);
+            _detach_from_list(&vma->ptnode);
+            kfree(vma);
+        }
+        else{
+            vma->start+=length;
+            vma->off+=length;
+            vma->length-=length;
+        }
+    }
+    else{
+        printk("munmap parameter error!\n");
+        return -1;
+    }
+    return 0;
     /* (Final) TODO END */
 }
 
@@ -123,7 +199,9 @@ define_syscall(writev, int fd, struct iovec *iov, int iovcnt)
 define_syscall(close, int fd)
 {
     /* (Final) TODO BEGIN */
-    
+    File* f=fd2file(fd);
+    file_close(f);
+    thisproc()->oftable.file[fd]=NULL;
     /* (Final) TODO END */
     return 0;
 }
@@ -261,9 +339,40 @@ Inode *create(const char *path, short type, short major, short minor,
               OpContext *ctx)
 {
     /* (Final) TODO BEGIN */
-    
+    char name[FILE_NAME_MAX_LENGTH];
+    Inode* dir=nameiparent(path,name,ctx);
+    if(dir==NULL)return NULL;
+
+    inodes.lock(dir);
+    Inode* ip=NULL;
+    usize inode_no=inodes.lookup(dir,name,NULL);
+    if(inode_no!=0){
+        ip=inodes.get(inode_no);
+        inodes.unlock(dir);
+        inodes.put(ctx,dir);
+        inodes.lock(ip);
+        if(type==INODE_REGULAR&&ip->entry.type==INODE_REGULAR)return ip;
+        inodes.unlock(ip);
+        inodes.put(ctx,ip);
+        return NULL;
+    }
+    ip=inodes.get(inodes.alloc(ctx,type));
+    inodes.lock(ip);
+    ip->entry.major=major;
+    ip->entry.minor=minor;
+    ip->entry.num_links=1;
+    inodes.sync(ctx,ip,true);
+    if(type==INODE_DIRECTORY){
+        dir->entry.num_links++;
+        inodes.sync(ctx,dir,true);
+        inodes.insert(ctx,ip,".",ip->inode_no);
+        inodes.insert(ctx,ip,"..",dir->inode_no);
+    }
+    inodes.insert(ctx,dir,name,ip->inode_no);
+    inodes.unlock(dir);
+    inodes.put(ctx,dir);
+    return ip;
     /* (Final) TODO END */
-    return 0;
 }
 
 define_syscall(openat, int dirfd, const char *path, int omode)
@@ -374,6 +483,25 @@ define_syscall(chdir, const char *path)
      * Change the cwd (current working dictionary) of current process to 'path'.
      * You may need to do some validations.
      */
+    OpContext ctx;
+    bcache.begin_op(&ctx);
+    Inode* ip=namei(path,&ctx);
+    if(ip==NULL){
+        bcache.end_op(&ctx);
+        return -1;
+    }
+    inodes.lock(ip);
+    if(ip->entry.type!=INODE_DIRECTORY){
+        inodes.unlock(ip);
+        inodes.put(&ctx,ip);
+        bcache.end_op(&ctx);
+        return -1;
+    }
+    inodes.unlock(ip);
+    inodes.put(&ctx,thisproc()->cwd);
+    bcache.end_op(&ctx);
+    thisproc()->cwd=ip;
+    return 0;
     
     /* (Final) TODO END */
 }
@@ -382,6 +510,17 @@ define_syscall(pipe2, int pipefd[2], int flags)
 {
 
     /* (Final) TODO BEGIN */
-    
+    File *f0, *f1;
+    if(flags)return -1;
+    if(pipe_alloc(&f0,&f1)==-1)return -1;
+    int fd0=fdalloc(f0),fd1=fdalloc(f1);
+    if(fd0==-1||fd1==-1){
+        if(fd0!=-1)sys_close(fd0);
+        if(fd1!=-1)sys_close(fd1);
+        return -1;
+    }
+    pipefd[0]=fd0;
+    pipefd[1]=fd1;
+    return 0;
     /* (Final) TODO END */
 }

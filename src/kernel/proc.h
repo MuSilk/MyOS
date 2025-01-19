@@ -12,9 +12,13 @@ enum procstate { UNUSED, RUNNABLE, RUNNING, SLEEPING, DEEPSLEEPING, ZOMBIE };
 
 typedef struct UserContext {
     // TODO: customize your trap frame
-    u64 spsr,elr;
-    u64 x[18];
+    u64 q0[2];
+    u64 spsr;
+    u64 elr;
     u64 sp;
+    // u64 ttbr0;
+    u64 tpidr0;
+    u64 x[32];
 } UserContext;
 
 typedef struct KernelContext {
@@ -28,6 +32,16 @@ struct schinfo {
     // TODO: customize your sched info
     ListNode ptnode;
 };
+
+struct vma{
+    u64 start,end,length,off;
+    int permission;
+    int flags;
+    struct file* file;
+    ListNode ptnode;
+};
+
+void vma_writeback(struct vma* vma,usize length);
 
 typedef struct Proc {
     bool killed;
@@ -46,6 +60,7 @@ typedef struct Proc {
     KernelContext *kcontext;
     struct oftable oftable;
     Inode *cwd;
+    ListNode vma_head;
 } Proc;
 
 void init_kproc();

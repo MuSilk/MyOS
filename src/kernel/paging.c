@@ -15,13 +15,30 @@
 
 void init_sections(ListNode *section_head) {
     /* (Final) TODO BEGIN */
-
+    auto section=(struct section*)kalloc(sizeof(struct section));
+    _insert_into_list(section_head,&section->stnode);
+    section->begin=section->end=0;
+    section->flags=ST_HEAP;
     /* (Final) TODO END */
 }
 
 void free_sections(struct pgdir *pd) {
     /* (Final) TODO BEGIN */
-    
+    for(auto p=pd->section_head.next;p!=&pd->section_head;){
+        if(p==&pd->section_head)break;
+        struct section* sec=container_of(p,struct section,stnode);
+        for(u64 i=PAGE_BASE(sec->begin);i<sec->end;i+=PAGE_SIZE){
+            auto pte=get_pte(pd,i,false);
+            if(pte&&(*pte&PTE_VALID))kfree_page((void*)P2K(PTE_ADDRESS(*pte)));
+        }
+        if(sec->fp){
+            file_close(sec->fp);
+        }
+
+        p=p->next;
+        _detach_from_list(&sec->stnode);
+        kfree(sec);
+    }
     /* (Final) TODO END */
 }
 
@@ -36,15 +53,41 @@ u64 sbrk(i64 size) {
      * Return the previous heap_end.
      */
 
-    
+    printk("sbrk\n");
+
+    auto pd=&thisproc()->pgdir;
+    struct section* sec=NULL;
+    _for_in_list(p,&pd->section_head){
+        if(p==&pd->section_head)break;
+        auto s=container_of(p,struct section,stnode);
+        if(s->flags==ST_HEAP){
+            sec=s;
+            break;
+        }
+    };
+    if(!sec)PANIC();
+    u64 res=sec->end;
+    sec->end+=size;
+    if(size<0){
+        for(u64 i=0;i<(u64)-size;i+=PAGE_SIZE){
+            auto pte=get_pte(pd,sec->end+i,false);
+            if(pte&&*pte){
+                kfree_page((void*)P2K((*pte)&KSPACE_MASK));
+                *pte=NULL;
+            }
+        }
+    }
+    arch_tlbi_vmalle1is();
+    return res;
     /* (Final) TODO END */
 }
 
 int pgfault_handler(u64 iss) {
+    // printk("pgfault_handler\n");
     Proc *p = thisproc();
+    ASSERT(p!=NULL);
     struct pgdir *pd = &p->pgdir;
-    u64 addr =
-            arch_get_far(); // Attempting to access this address caused the page fault
+    u64 addr = arch_get_far(); // Attempting to access this address caused the page fault
 
     /** 
      * (Final) TODO BEGIN
@@ -55,12 +98,58 @@ int pgfault_handler(u64 iss) {
      * 4. Return to user code or kill the process.
      */
 
+    // printk("pagefault:%llx\n",(u64)addr);
+    if(addr&KSPACE_MASK)PANIC();
+
+    if(!_empty_list(&p->vma_head)){
+        struct vma* vma=NULL;
+        _for_in_list(node,&p->vma_head){
+            if(node==&p->vma_head)break;
+            auto v=container_of(node,struct vma,ptnode);
+            if(v->start<=addr&&addr<v->end){vma=v;break;}
+        }
+        if(vma){
+            addr=PAGE_BASE(addr);
+            void* page=kalloc_page();
+            vmmap(pd,addr,page,vma->permission);
+            arch_tlbi_vmalle1is();
+            struct file *f = vma->file;
+            if(!f->readable||f->type!=FD_INODE)return -1;
+            inodes.lock(f->ip);
+            inodes.read(f->ip,(u8*)page,vma->off+(addr-vma->start),PAGE_SIZE);
+            inodes.unlock(f->ip);
+            return 0;
+        }
+    }
+
+    auto pte = get_pte(pd,addr,true);
+    if (*pte == NULL){
+        vmmap(pd,addr,kalloc_page(),PTE_USER_DATA);
+    }
+    else if (PTE_FLAGS(*pte) & PTE_RO){
+        auto p = kalloc_page();
+        memcpy(p, (void *)P2K(PTE_ADDRESS(*pte)), PAGE_SIZE);
+        kfree_page((void *)P2K(PTE_ADDRESS(*pte)));
+        vmmap(pd,addr,p,PTE_USER_DATA);
+    }
+    arch_tlbi_vmalle1is();
+    return 0;
+
+
     /* (Final) TODO END */
 }
 
 void copy_sections(ListNode *from_head, ListNode *to_head)
 {
     /* (Final) TODO BEGIN */
+    _for_in_list(p, from_head){
+		if(p == from_head)break;
+		struct section* sec = container_of(p, struct section, stnode);
+		struct section* new_sec = kalloc(sizeof(struct section));
+		memmove(new_sec, sec, sizeof(struct section));
+		if(sec->fp)new_sec->fp = file_dup(sec->fp);
+		_insert_into_list(to_head, &new_sec->stnode);
+	}
 
     /* (Final) TODO END */
 }

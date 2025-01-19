@@ -14,3 +14,6 @@ void srand(unsigned seed);
 
 // syscall
 u64 syscall_myreport(u64 id);
+
+void pgfault_first_test();
+void pgfault_second_test();
