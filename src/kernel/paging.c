@@ -15,10 +15,7 @@
 
 void init_sections(ListNode *section_head) {
     /* (Final) TODO BEGIN */
-    auto section=(struct section*)kalloc(sizeof(struct section));
-    _insert_into_list(section_head,&section->stnode);
-    section->begin=section->end=0;
-    section->flags=ST_HEAP;
+    init_list_node(section_head);
     /* (Final) TODO END */
 }
 
@@ -52,8 +49,6 @@ u64 sbrk(i64 size) {
      * 
      * Return the previous heap_end.
      */
-
-    printk("sbrk\n");
 
     auto pd=&thisproc()->pgdir;
     struct section* sec=NULL;
@@ -128,11 +123,12 @@ int pgfault_handler(u64 iss) {
     }
     else if (PTE_FLAGS(*pte) & PTE_RO){
         auto p = kalloc_page();
-        memcpy(p, (void *)P2K(PTE_ADDRESS(*pte)), PAGE_SIZE);
+        memmove(p, (void *)P2K(PTE_ADDRESS(*pte)), PAGE_SIZE);
         kfree_page((void *)P2K(PTE_ADDRESS(*pte)));
         vmmap(pd,addr,p,PTE_USER_DATA);
     }
     arch_tlbi_vmalle1is();
+    // printk("pagefault:%llx dealed\n",(u64)addr);
     return 0;
 
 

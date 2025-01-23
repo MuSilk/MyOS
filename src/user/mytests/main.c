@@ -31,6 +31,6 @@ void fork_test(){
 
 int main(int argc, char *argv[])
 {
-    printf("mytests success\n");
+    fork_test();
     exit(0);
 }

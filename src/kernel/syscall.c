@@ -47,6 +47,11 @@ void syscall_entry(UserContext *context)
 bool user_readable(const void *start, usize size) {
     /* (Final) TODO BEGIN */
     if((u64)start>=KSPACE_MASK)return true;
+    _for_in_list(p,&thisproc()->vma_head){
+        if(p==&thisproc()->vma_head)break;
+        auto vma=container_of(p,struct vma,ptnode);
+        if(vma->start<=(u64)start&&(u64)start+size<=vma->end)return true;
+    }
     auto st_head=&thisproc()->pgdir.section_head;
     _for_in_list(p,st_head){
         if(p==st_head)break;
@@ -66,6 +71,11 @@ bool user_writeable(const void *start, usize size) {
     /* (Final) TODO Begin */
     if((u64)start>=KSPACE_MASK)return true;
     auto st_head=&thisproc()->pgdir.section_head;
+    _for_in_list(p,&thisproc()->vma_head){
+        if(p==&thisproc()->vma_head)break;
+        auto vma=container_of(p,struct vma,ptnode);
+        if(!(vma->flags&PTE_RO)&&vma->start<=(u64)start&&(u64)start+size<=vma->end)return true;
+    }
     _for_in_list(p,st_head){
         if(p==st_head)break;
         auto sec=container_of(p,struct section,stnode);

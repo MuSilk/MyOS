@@ -318,13 +318,14 @@ int fork()
         for(u64 va=PAGE_BASE(sec->begin);va<sec->end;va+=PAGE_SIZE){
             auto oldpte=get_pte(&fat->pgdir,va,false);
             if(oldpte==NULL||!(*oldpte&PTE_VALID))continue;
-            // vmmap(&son->pgdir,va,(void*)P2K(PTE_ADDRESS(*oldpte)),PTE_FLAGS(*oldpte)|PTE_RO);
-            void* np=kalloc_page();
-            vmmap(&son->pgdir, va, np, PTE_FLAGS(*oldpte));
-            copyout(&son->pgdir, (void*)va, (void*)P2K(PTE_ADDRESS(*oldpte)), PAGE_SIZE);
-            
+            *oldpte|=PTE_RO;
+            vmmap(&son->pgdir,va,(void*)P2K(PTE_ADDRESS(*oldpte)),PTE_FLAGS(*oldpte)|PTE_RO);
+            // void* np=kalloc_page();
+            // vmmap(&son->pgdir, va, np, PTE_FLAGS(*oldpte));
+            // copyout(&son->pgdir, (void*)va, (void*)P2K(PTE_ADDRESS(*oldpte)), PAGE_SIZE);
         }
     }
+    arch_tlbi_vmalle1is();
     copy_sections(&fat->pgdir.section_head,&son->pgdir.section_head);
     memmove(son->ucontext,fat->ucontext,sizeof(UserContext));
 

@@ -101,7 +101,7 @@ void vmmap(struct pgdir *pd, u64 va, void *ka, u64 flags)
 void vmunmap(struct pgdir *pd, u64 va){
     auto pte=get_pte(pd,va,false);
     if(pte==NULL)return;
-    decrement_rc(&refpage[PTE_ADDRESS(*pte)/PAGE_SIZE].ref);
+    kfree_page((void*)P2K(PTE_ADDRESS(*pte)));
     *pte=NULL;
 }
 
