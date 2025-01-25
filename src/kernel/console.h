@@ -10,6 +10,8 @@ struct console {
     SpinLock lock;
     Semaphore sem;
     char buf[IBUF_SIZE];
+    char back_buf[IBUF_SIZE];
+    usize back_size;
     usize read_idx;
     usize write_idx;
     usize edit_idx;

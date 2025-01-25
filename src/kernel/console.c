@@ -77,7 +77,16 @@ isize console_read(Inode *ip, char *dst, isize n)
     /* (Final) TODO END */
 }
 
+void back_buf_clear(){
+    while(cons.back_size!=0){
+        cons.edit_idx=BUF_NXT(cons.edit_idx);
+        cons.buf[cons.edit_idx]=cons.back_buf[--cons.back_size];
+        uart_put_char(cons.back_buf[cons.back_size]);
+    }   
+}
+
 void clear_line(){
+    back_buf_clear();
     while(cons.edit_idx!=cons.write_idx&&cons.buf[cons.edit_idx]!='\n'){
         cons.edit_idx=BUF_PRE(cons.edit_idx);
         uart_put_char('\b');
@@ -103,6 +112,7 @@ void console_intr(char c)
     acquire_spinlock(&cons.lock);
     if(c==C('D')){
         if(BUF_NXT(cons.edit_idx)!= cons.read_idx){
+            back_buf_clear();
             cons.edit_idx = BUF_NXT(cons.edit_idx);
             cons.buf[cons.edit_idx] = c;
             uart_put_char(c);
@@ -124,10 +134,18 @@ void console_intr(char c)
     else{
         if(c=='\r')c='\n';
         if (BUF_NXT(cons.edit_idx)!=cons.read_idx){
-            cons.edit_idx=BUF_NXT(cons.edit_idx);
-            cons.buf[cons.edit_idx]=c;
-            uart_put_char(c);
-            if (c=='\n'||BUF_NXT(cons.edit_idx)==cons.read_idx){
+            if(c!='\n'){
+                cons.edit_idx=BUF_NXT(cons.edit_idx);
+                cons.buf[cons.edit_idx]=c;
+                uart_put_char(c);
+            }
+            if (c=='\n'||BUF_NXT(cons.edit_idx+cons.back_size)==cons.read_idx){
+                back_buf_clear();
+                if(c=='\n'){
+                    cons.edit_idx=BUF_NXT(cons.edit_idx);
+                    cons.buf[cons.edit_idx]=c;
+                    uart_put_char(c);
+                }
                 
                 write_back(cmd_base);
                 if(strncmp(
@@ -146,6 +164,10 @@ void console_intr(char c)
             }
         }
     }
+    for(int i=(int)cons.back_size-1;i>=0;i-=1)uart_put_char(cons.back_buf[i]);
+    uart_put_char(' ');
+    for(usize i=0;i<=cons.back_size;i++)uart_put_char('\b');
+
     release_spinlock(&cons.lock);
     /* (Final) TODO END */
 }
@@ -178,6 +200,24 @@ void console_intr_arror(char c){
             cons.buf[cons.edit_idx]=cmd_buf[cmd_cur][i];
             uart_put_char(cmd_buf[cmd_cur][i]);
         }
+    }
+    else if(c=='D'){//LEFT
+        if(cons.edit_idx==cons.write_idx){
+            release_spinlock(&cons.lock);
+            return;
+        }
+        cons.back_buf[cons.back_size++]=cons.buf[cons.edit_idx];
+        cons.edit_idx=BUF_PRE(cons.edit_idx);
+        uart_put_char('\b');
+    }
+    else if(c=='C'){//RIGHT
+        if(cons.back_size==0){
+            release_spinlock(&cons.lock);
+            return;
+        }
+        uart_put_char(cons.back_buf[--cons.back_size]);
+        cons.edit_idx=BUF_NXT(cons.edit_idx);
+        cons.buf[cons.edit_idx]=cons.back_buf[cons.back_size];
     }
     else{
         release_spinlock(&cons.lock);
