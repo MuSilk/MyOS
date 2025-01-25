@@ -3,6 +3,7 @@
 #include <fs/inode.h>
 
 #define IBUF_SIZE 128
+#define CMD_BUF_SIZE 16
 #define C(x) ((x) - '@') // Control-x
 
 struct console {
@@ -16,5 +17,6 @@ struct console {
 
 void console_init();
 void console_intr(char c);
+void console_intr_arror(char c);
 isize console_write(Inode *ip, char *buf, isize n);
 isize console_read(Inode *ip, char *dst, isize n);

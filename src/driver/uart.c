@@ -12,10 +12,12 @@ static void uartintr()
      * Invoke the console interrupt handler here. 
      * Without this, the shell may fail to properly handle user inputs.
      */
-    char c = uart_get_char();
-    if (c != 0xFF) {
-        console_intr(c);
-    }
+    char cbuf[5];
+    int p=0;
+    while ((cbuf[p]=uart_get_char())!=0xFF)++p;
+
+    if(p==1)console_intr(cbuf[0]);
+    else if(p==3)console_intr_arror(cbuf[2]);
 
     device_put_u32(UART_ICR, 1 << 4 | 1 << 5);
 }

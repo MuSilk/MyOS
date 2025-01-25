@@ -262,6 +262,7 @@ int kill(int pid)
 
     acquire_spinlock(&proclock);
     Proc* p=find_proc(pid,&root_proc);
+    if(p==NULL)printk("pid %d not found\n",pid);
     if(p!=NULL&&!is_unused(p)){
         p->killed=1;
         activate_proc(p);
